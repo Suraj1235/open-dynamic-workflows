@@ -5,5 +5,5 @@
   "license": "MIT",
   "keywords": ["workflows", "orchestration", "multi-agent", "parallel", "ultracode", "planning"],
   "skills": "./skills/",
-  "_note": "Descriptive metadata only. Codex has no plugin manifest format or marketplace; the real integration is the skill folder (skills/odw/SKILL.md) plus scripts/. See README."
+  "_note": "Descriptive metadata kept for compatibility. The canonical Codex marketplace manifest is .codex-plugin/plugin.json (consumed by repo marketplaces such as awesome-codex-plugins); the integration itself is the skill folder (skills/odw/SKILL.md) plus scripts/. See README."
 }

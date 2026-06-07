@@ -13,6 +13,16 @@ test('plugin.json metadata is valid JSON with required fields', () => {
   assert.equal(manifest.license, 'MIT');
 });
 
+test('.codex-plugin/plugin.json marketplace manifest is valid and in sync', () => {
+  const manifest = JSON.parse(readFileSync(join(root, '.codex-plugin', 'plugin.json'), 'utf8'));
+  const legacy = JSON.parse(readFileSync(join(root, 'plugin.json'), 'utf8'));
+  assert.equal(manifest.name, legacy.name);
+  assert.equal(manifest.license, legacy.license);
+  assert.equal(manifest.skills, './skills/');
+  assert.ok(manifest.version, 'marketplace manifest must declare a version');
+  assert.ok(manifest.interface && manifest.interface.displayName, 'interface.displayName required for marketplace listings');
+});
+
 test('canonical skill folder exists with frontmatter and daemon steps', () => {
   const skill = readFileSync(join(root, 'skills', 'odw', 'SKILL.md'), 'utf8');
   assert.match(skill, /^---\r?\nname: odw\r?\n/);
