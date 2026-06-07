@@ -166,7 +166,7 @@ The adapters are how your existing tool drives the engine. **On OpenCode the eng
 
 | Editor / agent | How it connects | No-key, no-daemon native mode? |
 | --- | --- | --- |
-| **OpenCode** | drop-in plugin (`"plugin": ["odw-opencode"]` in `opencode.json`) — triggers on "run a workflow", `ultracode`, or `/deep-research` | **Yes** — runs ODW's real engine *through* OpenCode's own model via the plugin SDK (`session.prompt`). No daemon, no extra key. (Daemon optional for 100-way fan-out + crash-resume.) |
+| **OpenCode** | drop-in plugin (`"plugin": ["odw-opencode"]` in `opencode.json`) — triggers on "run a workflow", `ultracode`, or `/deep-research` | **Yes — validated live on OpenCode 1.2.27**: runs ODW's real engine *through* OpenCode's own model via the plugin SDK (`session.prompt`); a full multi-agent run completed in 93 real round-trips. No daemon, no extra key. (Daemon optional for 100-way fan-out + crash-resume. `ODW_HOST_MODEL=provider/model` pins the agent model; `ODW_DEBUG=1` for diagnostics.) |
 | **Codex · Antigravity · OpenClaw** | a skill folder (`SKILL.md` + a zero-dependency bridge script) that teaches the agent to plan first, then call the daemon — the OpenClaw one is ClawHub-publishable | **No** — these hosts expose no model API to extensions, so the keyless path is the host orchestrating itself natively (not the ODW engine); the full engine needs the daemon + one key |
 | **VS Code** | extension: a sidebar of live workflows, a dashboard webview, a status bar that spins while agents run (loads in Antigravity unchanged) | n/a (UI client over the daemon API) |
 

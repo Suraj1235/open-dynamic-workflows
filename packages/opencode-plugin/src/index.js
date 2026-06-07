@@ -143,6 +143,22 @@ function planSummary(plan) {
   ].join(' · ');
 }
 
+// Recursion guard (verified necessary live on CLI 1.2.27): the chat.message
+// hook fires for EVERY user message in EVERY session of this opencode process —
+// including the prompts ODW itself sends to its child agent sessions. Agent
+// prompts routinely contain workflow-intent words, so without this guard each
+// child prompt re-triggered runEmbedded (4 nested runs per run → session storm).
+//
+// Both pieces of guard state are deliberately MODULE-level (shared across all
+// plugin instances in the process): a child session spawned by any instance
+// must be skipped by every instance, and one embedded run at a time per process
+// is the conservative cap — a second legitimate trigger while a run is active
+// gets the native-orchestration directive instead (never silently dropped).
+// embeddedActive is checked AND set synchronously in the hook (no await in
+// between), so two near-simultaneous triggers cannot interleave past the guard.
+const odwChildSessions = new Set();
+let embeddedActive = false;
+
 /**
  * Run the REAL ODW engine embedded IN-PROCESS, dispatching every agent() call
  * through OpenCode's own model via the SDK (no daemon, no external key). Lazily
@@ -155,13 +171,22 @@ async function runEmbedded(client, effective, directory) {
   try {
     ({ createEmbeddedOrchestrator } = await import('odw-daemon/embedded'));
     ({ createOpencodeBackend } = await import('./host-provider.js'));
-  } catch {
+  } catch (error) {
+    if (process.env.ODW_DEBUG) console.error('[odw] embedded import failed:', error?.message, error?.stack);
     return null; // embedded engine deps not installed (drop-in mode)
   }
-  const backend = createOpencodeBackend(client, { poolSize: 4 });
+  // ODW_HOST_MODEL ("providerID/modelID") forces the model for embedded agents;
+  // unset, child sessions inherit the host's configured default model.
+  const runSessions = [];
+  const backend = createOpencodeBackend(client, {
+    model: process.env.ODW_HOST_MODEL,
+    onSessionCreate: (id) => { odwChildSessions.add(id); runSessions.push(id); },
+  });
   try {
+    const startedAt = Date.now();
     const orchestrator = createEmbeddedOrchestrator({ invoke: backend.invoke, maxConcurrency: 4 });
     const { workflowId, result } = await orchestrator.run(effective.cleanPrompt, { cwd: directory });
+    if (process.env.ODW_DEBUG) console.error(`[odw] embedded ran workflow=${workflowId} elapsed=${Date.now() - startedAt}ms resultType=${typeof result}`);
     const rendered = typeof result === 'string'
       ? result
       : '```json\n' + JSON.stringify(result, null, 2).slice(0, 6000) + '\n```';
@@ -173,7 +198,14 @@ async function runEmbedded(client, effective, directory) {
       `Present this synthesized result to the user. Do NOT redo the work yourself.`,
     ].join('\n');
   } finally {
-    await backend.dispose();
+    // Cleanup must never mask the orchestration result/error, and the guard set
+    // must not grow unboundedly across runs in a long-lived opencode process.
+    try {
+      await backend.dispose();
+    } catch (error) {
+      if (process.env.ODW_DEBUG) console.error('[odw] backend dispose failed:', error?.message);
+    }
+    for (const id of runSessions) odwChildSessions.delete(id);
   }
 }
 
@@ -197,7 +229,11 @@ export const OdwPlugin = async ({ directory, client }) => {
   const daemon = createDaemonClient(port);
 
   return {
-    'chat.message': async (_input, output) => {
+    'chat.message': async (input, output) => {
+      // Recursion guard: never trigger on ODW's own child-session prompts (each
+      // child prompt fires this hook too — without this, runs nest exponentially).
+      if (input?.sessionID && odwChildSessions.has(input.sessionID)) return;
+
       const parts = output?.parts ?? [];
       const textPart = parts.find((p) => p.type === 'text' && typeof p.text === 'string');
       if (!textPart) return;
@@ -215,6 +251,15 @@ export const OdwPlugin = async ({ directory, client }) => {
       // daemon, no second key). Only available when the SDK exposes session.prompt
       // and the embedded engine deps are installed; any failure falls through.
       if (client?.session?.prompt) {
+        // One embedded run per process: the check and the set are synchronous
+        // (no await between them), so concurrent triggers cannot interleave past
+        // the guard. A trigger that loses the race still gets orchestration —
+        // via the native-subagent directive — rather than being dropped.
+        if (embeddedActive) {
+          textPart.text = fallbackDirective(effective.cleanPrompt, effective.mode);
+          return;
+        }
+        embeddedActive = true;
         try {
           const embedded = await runEmbedded(client, effective, directory);
           if (embedded) { textPart.text = embedded; return; }
@@ -224,6 +269,8 @@ export const OdwPlugin = async ({ directory, client }) => {
             fallbackDirective(effective.cleanPrompt, effective.mode),
           ].join('\n');
           return;
+        } finally {
+          embeddedActive = false;
         }
       }
 
