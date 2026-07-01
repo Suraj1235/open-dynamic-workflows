@@ -1,0 +1,12 @@
+description = "Run a task through Open Dynamic Workflows"
+prompt = """
+Route this request through Open Dynamic Workflows using the configured ODW MCP tools.
+
+Task:
+{{args}}
+
+Use `mcp_odw_odw_health` first if daemon availability is unclear.
+Use `mcp_odw_odw_run` for direct execution. Use `mcp_odw_odw_plan` first only when the user asks to review the plan, the task is expensive, or mutation risk is high.
+Report the workflow id, topology, agent count, cost/time estimate, status, and final synthesized result.
+If ODW is unavailable, say exactly what is missing (`odw-daemon start` or `odw-daemon doctor gemini`) before falling back to Gemini-native planning.
+"""

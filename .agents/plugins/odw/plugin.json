@@ -1,0 +1,5 @@
+{
+  "$schema": "https://antigravity.google/schemas/v1/plugin.json",
+  "name": "odw",
+  "description": "Open Dynamic Workflows plugin for ultracode-style planning, parallel agents, verification, and crash-resumable workflow execution."
+}
