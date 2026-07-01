@@ -3,11 +3,11 @@
  * POST {baseURL}/v1/messages — headers: x-api-key, anthropic-version: 2023-06-01.
  * max_tokens REQUIRED top-level; system top-level; content = typed blocks.
  * Structured output: output_config.format json_schema (fallback: prompt-embedded).
- * opus-4.7/4.8 reject temperature — omitted for those models.
+ * Newer models (opus 4.7+) reject the temperature field; rather than a stale
+ * model allowlist we detect the API's "temperature unsupported" 400 and retry
+ * ONCE without it — model-name-agnostic, so it never goes out of date.
  * usage: {input_tokens, output_tokens}.
  */
-
-const NO_TEMPERATURE = /^claude-opus-4-(7|8)/;
 
 export function createAnthropicProvider({ apiKey, baseURL = 'https://api.anthropic.com', fetchImpl = fetch }) {
   if (!apiKey) throw new Error('anthropic provider requires an API key (config.apiKeys.anthropic or ANTHROPIC_API_KEY)');
@@ -16,13 +16,14 @@ export function createAnthropicProvider({ apiKey, baseURL = 'https://api.anthrop
   const baseBody = (job) => {
     const body = { model: job.model, max_tokens: job.maxTokens ?? 4096 };
     if (job.systemPrompt) body.system = job.systemPrompt;
-    if (job.temperature !== undefined && !NO_TEMPERATURE.test(job.model)) {
-      body.temperature = job.temperature;
-    }
+    // Always send temperature when supplied. If the model doesn't accept it the
+    // API returns a 400 we recognize and post() strips-and-retries once (below),
+    // instead of relying on a hardcoded model list that goes stale each release.
+    if (job.temperature !== undefined) body.temperature = job.temperature;
     return body;
   };
 
-  const post = async (body, opts) => {
+  const sendOnce = async (body, opts) => {
     const res = await fetchImpl(`${baseURL}/v1/messages`, {
       method: 'POST',
       headers: {
@@ -38,6 +39,31 @@ export function createAnthropicProvider({ apiKey, baseURL = 'https://api.anthrop
       throw httpError('anthropic', res.status, errorBody);
     }
     return res.json();
+  };
+
+  // Dynamic temperature self-heal: on a 400 that reports temperature is
+  // unsupported/deprecated for the model, drop the field and retry EXACTLY once
+  // (bounded — a second failure rethrows, never loops). Mirrors the reactive
+  // context-overflow self-heal: match the error text, correct, retry once.
+  const post = async (body, opts) => {
+    try {
+      return await sendOnce(body, opts);
+    } catch (error) {
+      if (error.code === 'temperature_unsupported' && 'temperature' in body) {
+        const { temperature, ...withoutTemp } = body;
+        void temperature;
+        try {
+          return await sendOnce(withoutTemp, opts);
+        } catch (retryError) {
+          // Self-heal already spent: a temperature-less request that STILL
+          // reports "temperature unsupported" is an unexpected server state, not
+          // a recoverable one — demote to a plain failure so nothing loops on it.
+          if (retryError.code === 'temperature_unsupported') retryError.code = 'request_failed';
+          throw retryError;
+        }
+      }
+      throw error;
+    }
   };
 
   const usageOf = (data) => ({
@@ -148,6 +174,24 @@ export const CONTEXT_OVERFLOW_PHRASES = [
   'reduce the length of the messages',
 ];
 
+/**
+ * Phrases on an HTTP 400 that mean the model rejected the `temperature` field
+ * (newer models deprecate sampling params). Kept broad and editable in one
+ * place — like CONTEXT_OVERFLOW_PHRASES — so detection is model-name-agnostic
+ * and survives future model releases without a code change.
+ */
+export const TEMPERATURE_UNSUPPORTED_PHRASES = [
+  'temperature is deprecated',
+  'temperature is not supported',
+  'temperature is no longer supported',
+  'temperature parameter is not supported',
+  'does not support temperature',
+  'unsupported parameter: temperature',
+  'unsupported_parameter: temperature',
+  'temperature: this parameter is not supported',
+  'temperature and top_p cannot both be specified',
+];
+
 export function httpError(provider, status, body) {
   const text = String(body ?? '');
   const err = new Error(`${provider} HTTP ${status}: ${text.slice(0, 300)}`);
@@ -156,7 +200,15 @@ export function httpError(provider, status, body) {
   if (status === 429) err.code = 'rate_limit';
   else if (status === 408 || status === 504) err.code = 'timeout';
   else if (status >= 500) err.code = 'service_unavailable';
-  else if ((status === 400 || status === 413) && isContextOverflow(text)) {
+  else if (status === 401 || status === 403) {
+    // A present-but-invalid API key. Give an actionable message instead of a
+    // raw body slice, and NEVER echo the key. Non-retryable by design (not in
+    // the RETRYABLE set) — retrying a bad key just burns attempts.
+    err.code = 'auth_failed';
+    err.message =
+      `${provider} rejected the API key (HTTP ${status}) — verify config.apiKeys.${provider} ` +
+      `or the ${provider.toUpperCase()}_API_KEY env var in ~/.odw/config.json`;
+  } else if ((status === 400 || status === 413) && isContextOverflow(text)) {
     // Sub-classify the recoverable 400 so the queue self-heals (compact + retry)
     // instead of treating it as a generic non-retryable failure (the hermes-agent
     // #813 bug). Auth/schema 400s stay 'request_failed' and never enter the loop.
@@ -164,6 +216,9 @@ export function httpError(provider, status, body) {
     const nums = parseOverflowTokens(text);
     if (nums.requestedTokens) err.requestedTokens = nums.requestedTokens;
     if (nums.limitTokens) err.limitTokens = nums.limitTokens;
+  } else if (status === 400 && isTemperatureUnsupported(text)) {
+    // Sub-classify so the anthropic provider strips temperature and retries once.
+    err.code = 'temperature_unsupported';
   } else err.code = 'request_failed';
 
   return err;
@@ -172,6 +227,11 @@ export function httpError(provider, status, body) {
 function isContextOverflow(body) {
   const lower = body.toLowerCase();
   return CONTEXT_OVERFLOW_PHRASES.some((p) => lower.includes(p));
+}
+
+function isTemperatureUnsupported(body) {
+  const lower = body.toLowerCase();
+  return TEMPERATURE_UNSUPPORTED_PHRASES.some((p) => lower.includes(p));
 }
 
 /**

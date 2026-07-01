@@ -7,7 +7,7 @@ External smoke tests for validating Open Dynamic Workflows against an Azure-host
 Run from the repository root with credentials supplied as environment variables:
 
 ```powershell
-$env:AZURE_OPENAI_ENDPOINT="https://suraj-mn8k5wxg-eastus2.cognitiveservices.azure.com"
+$env:AZURE_OPENAI_ENDPOINT="https://<your-resource>.cognitiveservices.azure.com"
 $env:AZURE_OPENAI_API_KEY="<your key>"
 $env:AZURE_OPENAI_MODEL="Kimi-K2.6"
 node --test Tests/azure-kimi-smoke.test.mjs
@@ -53,7 +53,7 @@ node Tests/odw-endurance/run-campaign.mjs --target=100 --provider=mock
 Run against the live Azure Kimi endpoint instead:
 
 ```powershell
-$env:AZURE_OPENAI_ENDPOINT="https://suraj-mn8k5wxg-eastus2.cognitiveservices.azure.com"
+$env:AZURE_OPENAI_ENDPOINT="https://<your-resource>.cognitiveservices.azure.com"
 $env:AZURE_OPENAI_API_KEY="<your key>"
 $env:AZURE_OPENAI_MODEL="Kimi-K2.6"
 $env:ODW_PROVIDER_MODE="live"

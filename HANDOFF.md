@@ -40,18 +40,10 @@ Key technical decisions:
 git clone https://github.com/Suraj1235/open-dynamic-workflows
 cd open-dynamic-workflows
 npm install
-npm test
+npm run setup
 ```
 
-Run the daemon and a workflow from a shell (no editor needed):
-
-```bash
-npm install -g ./packages/daemon       # global bin from the clone (odw-daemon is not on npm yet)
-odw-daemon start
-odw-daemon run --prompt "workflow: review every file in src for bugs" --cwd ./your-project
-```
-
-Point it at a model with `~/.odw/config.json` (the only required setup):
+`npm run setup` writes `~/.odw/config.json` and generates the daemon auth token at `~/.odw/daemon.token` (see §11 "Daemon authentication"). Then point it at a model by editing `~/.odw/config.json` — add one key and you're done:
 
 ```json
 {
@@ -59,6 +51,15 @@ Point it at a model with `~/.odw/config.json` (the only required setup):
   "models": { "planning": "gpt-4o-mini", "default": "claude-sonnet-4-6" }
 }
 ```
+
+Run the daemon and a workflow from a shell (no editor needed):
+
+```bash
+odw-daemon start
+odw-daemon run --prompt "workflow: review every file in src for bugs" --cwd ./your-project
+```
+
+(`odw-daemon` is not on npm yet; to get the global bin from the clone, run `npm install -g ./packages/daemon`, or drive it from the repo with `npm start` / `npm run odw -- run --prompt "..."`.)
 
 The single environment variable the code reads is `ODW_DAEMON_PORT` (verified via `grep -rEho 'process\.env\.[A-Z_]+' packages/*/src` → only `ODW_DAEMON_PORT`). `ODW_HOME` overrides the data directory. No keys are required in the environment — the config file or a local Ollama model is enough.
 
@@ -145,7 +146,8 @@ This is a locally-run developer tool, not a hosted service — "deployment" mean
 - **Strict host smoke:** add `-- --require-host opencode` (or another host name) when the machine is expected to prove that host CLI is runnable.
 - **OpenAI-compatible routing:** set `baseURLs.default` + `apiKeys.default` to use OpenCode Zen / Azure / vLLM / LM Studio / Groq with any model id; or `baseURLs.<name>` + a `name:model` model id for a named endpoint. Routing: `claude-*`→Anthropic, `gpt-*`/`o*`→OpenAI, `ollama:*`→Ollama, `name:model`→`baseURLs.name`, else→`baseURLs.default`.
 - **Reading a failure:** failed runs surface the reason at the top level — `odw-daemon status` / `GET /workflows/:id` include an `error` field, and `odw-daemon run` prints `reason:` on failure. `odw-daemon logs` has the full detail. Note free/small models occasionally return malformed JSON; the agent queue self-corrects by re-prompting with the validation error, but a model that never returns valid JSON will fail the run with a clear `did not match the required JSON shape` reason.
-- **Environment variables:** `ODW_DAEMON_PORT` (port override), `ODW_HOME` (data dir), and provider key fallbacks `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GOOGLE_API_KEY`.
+- **Environment variables:** `ODW_DAEMON_PORT` (port override), `ODW_HOME` (data dir), `ODW_DAEMON_TOKEN` (daemon auth token override), and provider key fallbacks `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GOOGLE_API_KEY`.
+- **Daemon authentication:** the daemon requires a Bearer token on every HTTP/WebSocket request except `GET /health` (`packages/daemon/src/server.js` enforces it). `npm run setup` generates a 64-character token at `~/.odw/daemon.token` (file mode `0600`); the daemon reads it from there, or from the `ODW_DAEMON_TOKEN` environment variable (env wins over the file), and auto-generates one on first start if neither is present. The bundled CLI and adapters attach `Authorization: Bearer <token>` automatically; a 401 prints how to fix it (copy the token from `~/.odw/daemon.token` or set `ODW_DAEMON_TOKEN`). Token-shaped strings are redacted from logs and HTTP errors.
 - **Secrets:** keys live only in the local config or the environment. They are never logged, never written into workflow/journal rows, and never returned in HTTP errors; the logger redacts key-shaped strings.
 - **Logs:** `~/.odw/logs/daemon.log`, newline-delimited JSON with `timestamp`, `level`, `message`.
 - **Monitoring:** `GET /health` returns active workflows and agent occupancy; the WebSocket `/ws/:id` streams per-workflow events (journal-replayable with `?after=<id>`).
@@ -165,7 +167,7 @@ The decisions that shaped the codebase.
 From `.studio/todos.md` and `.studio/blocked.md`.
 
 - **Budget hard-stop can overshoot** by up to `maxConcurrency` in-flight calls (a wave already dispatched finishes). Workaround: set the cap slightly below your true ceiling. Revisit if precise accounting matters.
-- **Daemon trust boundary is loopback + an 8 MB request limit, unauthenticated.** This is intentional for a localhost tool. Revisit before ever binding to a non-loopback interface (which would also need auth).
+- **Daemon trust boundary is loopback + an 8 MB request limit + Bearer-token auth.** Binding to `127.0.0.1` plus a required Bearer token (see §11 "Daemon authentication") is intentional for a localhost tool; `GET /health` is the only unauthenticated route. Revisit the model before ever binding to a non-loopback interface.
 - **WebSocket backpressure is unhandled** (fine for a localhost dashboard). Revisit if used over a slow link.
 - **OpenCode plugin lacks a `session.idle` background push** of daemon progress. Workaround: the `odw_status` / `odw_workflows` tools. Revisit when polling proves insufficient.
 - **Codex marketplace / Antigravity automation API** do not exist; those adapters ship skills + bridge scripts. Revisit if/when official APIs land.

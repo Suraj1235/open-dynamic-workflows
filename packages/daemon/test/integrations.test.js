@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import http from 'node:http';
+import { execFile, execFileSync } from 'node:child_process';
+import { promisify } from 'node:util';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -24,8 +26,26 @@ import {
 
 const repoRoot = resolve(fileURLToPath(new URL('../../..', import.meta.url)));
 
+const execFileAsync = promisify(execFile);
+
 function tempDir(name) {
   return mkdtempSync(join(tmpdir(), name));
+}
+
+/** Minimal /health responder so `doctor` sees a live daemon without booting one. */
+function startProbeDaemon(port) {
+  const server = http.createServer((req, res) => {
+    if (req.method === 'GET' && req.url === '/health') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({
+        status: 'ok', uptime: 1, activeWorkflows: 0, activeAgents: 0,
+        queuedAgents: 0, maxActiveAgentsObserved: 0, maxConcurrency: 16,
+      }));
+      return;
+    }
+    res.writeHead(404).end();
+  });
+  return new Promise((resolve) => server.listen(port, '127.0.0.1', () => resolve(server)));
 }
 
 test('mcpServerCommand points every MCP host at the local ODW MCP server', () => {
@@ -567,7 +587,94 @@ test('doctorAgentIntegration reports missing integration files without throwing'
     assert.equal(result.checks[3].label, 'kimi daemon bridge');
     assert.equal(result.checks[4].label, 'kimi ultracode flow skill');
     assert.equal(result.checks[5].label, 'kimi ultracode daemon bridge');
+
+    // A fully-absent group is neutral (skipped), not failed — but an explicit
+    // single-adapter request still reports "not ready" because the user asked
+    // about that one adapter specifically.
+    assert.equal(result.groups.length, 1);
+    assert.equal(result.groups[0].agent, 'kimi');
+    assert.equal(result.groups[0].status, 'absent');
   } finally {
+    rmSync(targetDir, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('doctorAgentIntegration all mode is ready on a clean install (uninstalled adapters are skipped, not failed)', () => {
+  const targetDir = tempDir('odw-doctor-clean-target-');
+  const home = tempDir('odw-doctor-clean-home-');
+  try {
+    // Nothing installed at all — the classic fresh-install scenario.
+    const result = doctorAgentIntegration('all', { targetDir, home, repoRoot });
+
+    assert.equal(result.kind, 'all');
+    // No adapter is partially installed, so `all` is ready (daemon liveness is
+    // checked separately by the CLI). The bug was flagging never-installed
+    // adapters (zcode, opencode, etc.) as failures.
+    assert.equal(result.ok, true);
+    assert.ok(result.groups.length >= 10);
+    // Every group is fully absent → skipped/neutral, never partial or ok.
+    assert.ok(result.groups.every((group) => group.status === 'absent'));
+    assert.ok(result.checks.every((check) => check.ok === false));
+  } finally {
+    rmSync(targetDir, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('doctorAgentIntegration all mode fails when an adapter is only partially installed', () => {
+  const targetDir = tempDir('odw-doctor-partial-target-');
+  const home = tempDir('odw-doctor-partial-home-');
+  try {
+    // Install opencode only, then corrupt one of its files so the group is
+    // present-but-broken (partial), while every other adapter stays absent.
+    installOpencodePlugin({ targetDir, repoRoot });
+    writeFileSync(join(targetDir, 'opencode.json'), JSON.stringify({ plugin: [] }));
+
+    const result = doctorAgentIntegration('all', { targetDir, home, repoRoot });
+    assert.equal(result.ok, false);
+
+    const opencode = result.groups.find((group) => group.agent === 'opencode');
+    assert.equal(opencode.status, 'partial');
+    // All the never-installed adapters remain neutral.
+    assert.ok(result.groups.filter((group) => group.agent !== 'opencode').every((group) => group.status === 'absent'));
+  } finally {
+    rmSync(targetDir, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('cli doctor all exits 0 on a clean install when the daemon is running', async () => {
+  const targetDir = tempDir('odw-cli-doctor-clean-target-');
+  const home = tempDir('odw-cli-doctor-clean-home-');
+  const port = 45999;
+  // Async execFile (not execFileSync) so this process's event loop stays free
+  // to serve the child's /health probe while the CLI subprocess runs.
+  const server = await startProbeDaemon(port);
+  try {
+    const { stdout } = await execFileAsync(
+      process.execPath,
+      [
+        join(repoRoot, 'packages', 'daemon', 'src', 'cli.js'),
+        'doctor',
+        'all',
+        '--target',
+        targetDir,
+        '--home',
+        home,
+        '--repo',
+        repoRoot,
+        '--port',
+        String(port),
+      ],
+      { encoding: 'utf8', env: { ...process.env, ODW_HOME: home, ODW_DAEMON_PORT: String(port) } }
+    );
+    // Exit 0 (execFileAsync rejects on non-zero) proves fully-absent adapters
+    // don't fail the run; the daemon is up and nothing is partially installed.
+    assert.match(stdout, /skipped|not installed/i);
+    assert.match(stdout, /daemon running/);
+  } finally {
+    await new Promise((r) => server.close(r));
     rmSync(targetDir, { recursive: true, force: true });
     rmSync(home, { recursive: true, force: true });
   }

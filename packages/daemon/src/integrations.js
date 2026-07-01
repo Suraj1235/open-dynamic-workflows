@@ -365,11 +365,51 @@ function installAllIntegrations(options = {}) {
   return { ...result, instructionsPath };
 }
 
+// Adapters covered by `doctor all`, in report order. Kept in lockstep with the
+// `all` fan-out in doctorChecksFor / installAllIntegrations.
+const ALL_AGENTS = ['mcp', 'codex', 'cursor', 'kimi', 'gemini', 'zed', 'zcode', 'opencode', 'vscode', 'antigravity', 'openclaw'];
+
+/**
+ * Classify a single adapter's checks:
+ *   'ok'      — every file is present and valid
+ *   'absent'  — nothing is installed (every check is a pure "missing")
+ *   'partial' — some files present, but at least one missing/broken
+ * A check is "present" when it passed OR failed for a reason other than the
+ * file being absent (invalid JSON, missing fragment, path mismatch, …). Those
+ * partial-install failures use messages distinct from the bare 'missing'
+ * sentinel that checkExists/checkText/checkMcpJson emit when a file is gone.
+ */
+function classifyGroup(checks) {
+  if (checks.every((check) => check.ok)) return 'ok';
+  const anyPresent = checks.some((check) => check.ok || check.message !== 'missing');
+  return anyPresent ? 'partial' : 'absent';
+}
+
+/** Group doctor checks by top-level adapter so absent vs partial can be judged per adapter. */
+function doctorGroupsFor(kind, options = {}) {
+  if (kind === 'all') {
+    return ALL_AGENTS.map((agent) => ({ agent, checks: doctorChecksFor(agent, options) }));
+  }
+  return [{ agent: kind, checks: doctorChecksFor(kind, options) }];
+}
+
 export function doctorAgentIntegration(kind = 'all', options = {}) {
-  const checks = doctorChecksFor(kind, options);
+  const groups = doctorGroupsFor(kind, options).map((group) => ({
+    ...group,
+    status: classifyGroup(group.checks),
+  }));
+  const checks = groups.flatMap((group) => group.checks);
+  // A fully-absent (never-installed) adapter is neutral when we scan everything
+  // with `all`: a clean install should read as ready. A partially-installed
+  // adapter is always a failure. An explicit single-adapter request stays
+  // strict — asking `doctor kimi` about an uninstalled adapter is "not ready".
+  const ok = kind === 'all'
+    ? groups.every((group) => group.status !== 'partial')
+    : groups.every((group) => group.status === 'ok');
   return {
     kind,
-    ok: checks.every((check) => check.ok),
+    ok,
+    groups,
     checks,
   };
 }

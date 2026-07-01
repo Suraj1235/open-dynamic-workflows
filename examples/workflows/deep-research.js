@@ -1,7 +1,10 @@
 /**
- * Deep research — consensus topology. Pass the question via args:
- * Run: odw-daemon run --script examples/workflows/deep-research.js
- * (the /deep-research trigger in platform plugins routes here)
+ * Deep research — consensus topology. Standalone example: pass the question via args:
+ *   odw-daemon run --script examples/workflows/deep-research.js
+ * This file is NOT what the /deep-research chat trigger executes. That trigger only
+ * sets mode:"deep-research" and routes the prompt through the planner in research
+ * mode, which compiles its own consensus workflow — it does not run this script or
+ * read args().question.
  */
 
 async function execute() {

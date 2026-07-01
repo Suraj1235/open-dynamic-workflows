@@ -62,6 +62,13 @@ export function stopDaemon() {
     return false;
   }
   process.kill(status.pid); // SIGTERM (terminates on Windows)
+  // On Windows a SIGTERM is a hard terminate — the daemon's drain handler
+  // (which clears the pid file) frequently never runs, so `status` would keep
+  // reporting a stale pid. Remove it here so status reflects reality at once.
+  // On POSIX the drain handler clears it after graceful shutdown, so leave it.
+  if (process.platform === 'win32' && existsSync(pidFile)) {
+    rmSync(pidFile, { force: true });
+  }
   return true;
 }
 

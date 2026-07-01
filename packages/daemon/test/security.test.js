@@ -1,7 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
-const { assertPublicHttpUrl, validateGlob } = await import('../src/tools.js');
+const { assertPublicHttpUrl, validateGlob, assertSafeGitArgs, createToolExecutor } = await import('../src/tools.js');
 
 // ── SSRF guard (no real network: lookup is injected) ─────────────────────────
 
@@ -82,4 +86,88 @@ test('glob: validateGlob enforces length and wildcard limits', () => {
   assert.throws(() => validateGlob('*?'.repeat(9)), /too complex: 18 wildcards/);
   // 16 wildcards is the inclusive maximum
   assert.equal(validateGlob('*'.repeat(16)), '*'.repeat(16));
+});
+
+// ── git tool subcommand allowlist ───────────────────────────────────────────
+// Unblocking the git tool (git_commit approval) must NOT double as a licence
+// for destructive git — force-push, hard-reset, arbitrary `-c` config overrides.
+
+test('git: safe subcommands (status/diff/log/add/commit) pass the allowlist', () => {
+  assert.deepEqual(assertSafeGitArgs(['status', '--short']), ['status', '--short']);
+  assert.deepEqual(assertSafeGitArgs(['log', '-1']), ['log', '-1']);
+  assert.deepEqual(assertSafeGitArgs(['diff', '--staged']), ['diff', '--staged']);
+  assert.deepEqual(assertSafeGitArgs(['add', '-A']), ['add', '-A']);
+  assert.deepEqual(assertSafeGitArgs(['commit', '-m', 'msg']), ['commit', '-m', 'msg']);
+});
+
+test('git: dangerous subcommands (push/reset/clean/rebase/update-ref) are blocked', () => {
+  assert.throws(() => assertSafeGitArgs(['push', 'origin', 'main']), /subcommand "push" is not allowed/);
+  assert.throws(() => assertSafeGitArgs(['reset', 'HEAD~1']), /subcommand "reset" is not allowed/);
+  assert.throws(() => assertSafeGitArgs(['clean', '-fdx']), /subcommand "clean" is not allowed/);
+  assert.throws(() => assertSafeGitArgs(['rebase', '-i', 'HEAD~3']), /subcommand "rebase" is not allowed/);
+  assert.throws(() => assertSafeGitArgs(['update-ref', 'HEAD', 'deadbeef']), /subcommand "update-ref" is not allowed/);
+  assert.throws(() => assertSafeGitArgs([]), /no subcommand provided/);
+});
+
+test('git: a force-push is blocked (both the push subcommand and the --force/-f flag)', () => {
+  // push is not on the allowlist at all
+  assert.throws(() => assertSafeGitArgs(['push', 'origin', 'main']), /"push" is not allowed/);
+  // blocked flags are rejected before the subcommand → the --force/-f/--force-with-lease
+  // guard trips first; either way a force-push can never run.
+  assert.throws(() => assertSafeGitArgs(['push', '--force', 'origin', 'main']), /flag "--force" is not allowed/);
+  assert.throws(() => assertSafeGitArgs(['push', '-f']), /flag "-f" is not allowed/);
+  assert.throws(() => assertSafeGitArgs(['push', '--force-with-lease']), /flag "--force-with-lease" is not allowed/);
+});
+
+test('git: a hard-reset is blocked (both the reset subcommand and the --hard flag)', () => {
+  // reset is not on the allowlist
+  assert.throws(() => assertSafeGitArgs(['reset', 'origin/main']), /"reset" is not allowed/);
+  // --hard trips the flag guard first (checked before the subcommand)
+  assert.throws(() => assertSafeGitArgs(['reset', '--hard', 'origin/main']), /flag "--hard" is not allowed/);
+  // --hard is rejected as a flag even on an otherwise-allowed subcommand
+  assert.throws(() => assertSafeGitArgs(['checkout', '--hard']), /flag "--hard" is not allowed/);
+});
+
+test('git: arbitrary -c config override and --exec are blocked even before an allowed subcommand', () => {
+  // -c core.hooksPath=/evil status  → would run an arbitrary hook: blocked by flag
+  assert.throws(() => assertSafeGitArgs(['-c', 'core.hooksPath=/tmp/evil', 'status']), /flag "-c" is not allowed/);
+  assert.throws(() => assertSafeGitArgs(['-c', 'protocol.ext.allow=always', 'fetch']), /flag "-c" is not allowed/);
+  assert.throws(() => assertSafeGitArgs(['--config-env=X=Y', 'status']), /flag "--config-env" is not allowed/);
+  assert.throws(() => assertSafeGitArgs(['fetch', '--upload-pack', 'sh -c evil', 'origin']), /flag "--upload-pack" is not allowed/);
+});
+
+test('git tool executor: force-push / hard-reset are blocked end-to-end even with git_commit unblocked', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'odw-git-'));
+  try {
+    // real repo so an ALLOWED command actually runs
+    execFileSync('git', ['init', '-q'], { cwd: root });
+    execFileSync('git', ['config', 'user.email', 't@t.t'], { cwd: root });
+    execFileSync('git', ['config', 'user.name', 't'], { cwd: root });
+    writeFileSync(join(root, 'f.txt'), 'x\n');
+
+    // git_commit REMOVED from requireApprovalFor → the approval gate is open,
+    // yet destructive git must still be refused by the allowlist.
+    const exec = createToolExecutor({
+      cwd: root,
+      safety: { requireApprovalFor: [], autoApproveReadOnly: true, dryRun: false, blockedCommands: [] },
+    });
+
+    // allowed subcommands run for real
+    const status = await exec({ tool: 'git', args: ['status', '--short'] });
+    assert.match(status.stdout, /f\.txt/);
+    await exec({ tool: 'git', args: ['add', 'f.txt'] });
+    const commit = await exec({ tool: 'git', args: ['commit', '-m', 'init'] });
+    assert.match(commit.stdout, /init/);
+
+    // the whole point: commit approval does NOT unlock force-push / hard-reset / -c.
+    // (blocked flags are rejected before the subcommand, so force/hard trip the flag
+    // guard first — either way the destructive op is refused, which is what matters.)
+    await assert.rejects(() => exec({ tool: 'git', args: ['push', '--force', 'origin', 'main'] }), /is not allowed/);
+    await assert.rejects(() => exec({ tool: 'git', args: ['push', 'origin', 'main'] }), /"push" is not allowed/);
+    await assert.rejects(() => exec({ tool: 'git', args: ['reset', '--hard', 'HEAD~1'] }), /is not allowed/);
+    await assert.rejects(() => exec({ tool: 'git', args: ['reset', 'HEAD~1'] }), /"reset" is not allowed/);
+    await assert.rejects(() => exec({ tool: 'git', args: ['-c', 'core.hooksPath=/tmp/evil', 'status'] }), /flag "-c" is not allowed/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

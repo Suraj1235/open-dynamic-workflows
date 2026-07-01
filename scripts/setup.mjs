@@ -38,7 +38,10 @@ if (existsSync(configPath)) {
   const starter = {
     daemon: { port: 7345, maxConcurrency: 16, logLevel: 'info' },
     apiKeys: { anthropic: '', openai: '' },
-    models: { planning: 'gpt-4o-mini', default: 'claude-sonnet-4-6', fallback: 'gpt-4o' },
+    // Single-provider (Anthropic) happy path: one key under apiKeys.anthropic
+    // satisfies all three roles. Swap any role to another provider's model
+    // (e.g. planning: 'gpt-4o-mini') once you add that provider's key.
+    models: { planning: 'claude-sonnet-4-6', default: 'claude-sonnet-4-6', fallback: 'claude-sonnet-4-6' },
     budget: { defaultMaxTokens: 1000000, defaultMaxCostUSD: 50, alertAtPercent: 80 },
   };
   // Written WITHOUT a BOM so every JSON parser (including Node's) accepts it.
@@ -59,7 +62,10 @@ if (existsSync(tokenPath)) {
 
 try {
   console.log('  installing the odw-daemon binary globally...');
-  execFileSync('npm', ['install', '-g', join(repoRoot, 'packages', 'daemon')], { stdio: 'inherit', shell: process.platform === 'win32' });
+  // Call npm.cmd directly on Windows instead of shell:true — passing a shell to
+  // execFileSync triggers Node's DEP0190 deprecation warning on every run.
+  const npmBin = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+  execFileSync(npmBin, ['install', '-g', join(repoRoot, 'packages', 'daemon')], { stdio: 'inherit' });
   console.log(`  ${ok('✓')} odw-daemon is on your PATH`);
 } catch {
   console.log('  (global install skipped — you can still run: npm run odw -- start)');

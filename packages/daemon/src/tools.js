@@ -18,6 +18,26 @@ const MAX_REDIRECTS = 5;
 const MAX_GLOB_LENGTH = 500;
 const MAX_GLOB_WILDCARDS = 16;
 
+// git tool safety: the `git_commit` approval key unblocks the git tool, but a
+// commit permission must NOT double as a licence for `git push --force`,
+// `git reset --hard`, or arbitrary `-c core.hooksPath=...` config overrides.
+// The tool is therefore scoped to a real subcommand allowlist (read-only +
+// commit workflow) and rejects everything else, PLUS a few flags that turn an
+// allowed subcommand into a destructive/arbitrary-exec one.
+const GIT_ALLOWED_SUBCOMMANDS = new Set([
+  'status', 'diff', 'log', 'show', 'add', 'commit',
+  'branch', 'checkout', 'switch', 'restore', 'stash',
+  'rev-parse', 'ls-files', 'blame', 'fetch',
+]);
+// Flags rejected anywhere in the argv (dashes normalized). `-c`/`--config-env`
+// inject arbitrary config (e.g. core.hooksPath, protocol.ext.allow → RCE);
+// `--exec`/`--upload-pack`/`--receive-pack` run an arbitrary program; `--hard`
+// blows away the worktree; `--force`/`-f` force-push/force-delete.
+const GIT_BLOCKED_FLAGS = new Set([
+  '-c', '--config-env', '--exec', '--upload-pack', '--receive-pack',
+  '--hard', '--force', '-f', '--force-with-lease',
+]);
+
 // ── tool manifest ─────────────────────────────────────────────────────────────
 
 /**
@@ -212,6 +232,43 @@ export async function assertPublicHttpUrl(url, { allowPrivateNetwork, lookup } =
     }
   }
   return u;
+}
+
+/**
+ * Scope the git tool to a safe subcommand allowlist. Rejects dangerous
+ * subcommands (push/reset/clean/rebase/...) and dangerous flags (force/hard/
+ * arbitrary -c config overrides/--exec) so that unblocking the git tool for
+ * commits can NEVER be escalated into a force-push, hard-reset, or RCE.
+ * @param {string[]} args the variadic git argv (already spread from {args:[...]})
+ * @returns {string[]} the validated argv
+ */
+export function assertSafeGitArgs(args) {
+  const argv = (Array.isArray(args) ? args : []).map(String);
+  // Reject blocked flags FIRST — a global flag like `-c core.hooksPath=...` can
+  // sit BEFORE the subcommand, so flag rejection must not depend on where the
+  // subcommand-detection heuristic lands. `-c`/`--config-env` inject arbitrary
+  // config (RCE via hooks/protocol.ext), `--exec`/`--upload-pack` run an
+  // arbitrary program, `--hard`/`--force` are destructive.
+  for (const raw of argv) {
+    if (!raw.startsWith('-')) continue;
+    const flag = raw.split('=', 1)[0]; // normalize `--flag=value` → `--flag`
+    if (GIT_BLOCKED_FLAGS.has(flag)) {
+      throw new Error(`git: flag "${flag}" is not allowed (force/hard/reset/arbitrary-config are blocked)`);
+    }
+  }
+  // The subcommand is the first token, and it must be on the allowlist. With
+  // all blocked flags already rejected, the first token is either the
+  // subcommand or a benign global flag (e.g. `--no-pager`); skip leading
+  // benign flags to reach the subcommand, but a value-taking `-c` can no longer
+  // appear here (it was rejected above).
+  const sub = argv.find((a) => !a.startsWith('-'));
+  if (!sub) throw new Error('git: no subcommand provided');
+  if (!GIT_ALLOWED_SUBCOMMANDS.has(sub)) {
+    throw new Error(
+      `git: subcommand "${sub}" is not allowed — permitted: ${[...GIT_ALLOWED_SUBCOMMANDS].sort().join(', ')}`
+    );
+  }
+  return argv;
 }
 
 /**
@@ -416,7 +473,10 @@ export function createToolExecutor(options) {
 
     git: async (...args) => {
       requireUnattendedApproval('git_commit');
-      const stdout = execFileSync('git', args.map(String), { cwd, timeout: 60_000, encoding: 'utf8' });
+      // Scope to the safe subcommand allowlist BEFORE spawning git: the commit
+      // approval must never smuggle a `push --force` / `reset --hard` / `-c` RCE.
+      const safeArgs = assertSafeGitArgs(args);
+      const stdout = execFileSync('git', safeArgs, { cwd, timeout: 60_000, encoding: 'utf8' });
       return { stdout: stdout.slice(0, 100_000) };
     },
   };

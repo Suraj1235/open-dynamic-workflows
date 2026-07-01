@@ -1,7 +1,7 @@
 {
   "name": "odw-daemon",
   "version": "0.1.0",
-  "description": "Local orchestration daemon for open-dynamic-workflows: sandboxed scripts, 100+ concurrent agents, crash-resumable state.",
+  "description": "Local orchestration daemon for open-dynamic-workflows: sandboxed scripts, concurrent agents (default 16, scale to your hardware via config.daemon.maxConcurrency), crash-resumable state.",
   "type": "module",
   "main": "src/index.js",
   "exports": {

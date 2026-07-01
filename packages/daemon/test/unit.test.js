@@ -131,7 +131,7 @@ const fakeFetch = (assertFn, payload) => async (url, init) => {
   };
 };
 
-test('provider/anthropic: wire shape, temperature omitted on opus-4-8, usage mapping', async () => {
+test('provider/anthropic: wire shape, temperature sent (dynamic-strip, not model-name allowlist), usage mapping', async () => {
   let captured;
   const provider = createAnthropicProvider({
     apiKey: 'k',
@@ -143,7 +143,10 @@ test('provider/anthropic: wire shape, temperature omitted on opus-4-8, usage map
   assert.match(captured.url, /\/v1\/messages$/);
   assert.equal(captured.headers['x-api-key'], 'k');
   assert.equal(captured.body.system, 'sys');
-  assert.equal(captured.body.temperature, undefined, 'opus-4-8 must omit temperature');
+  // Temperature is now ALWAYS sent; models that reject it trigger a 400 the
+  // provider recognizes and strips-then-retries (see providers-error.test.js).
+  // No stale per-model NO_TEMPERATURE allowlist anymore.
+  assert.equal(captured.body.temperature, 0.5, 'temperature is sent on the wire; stripping is 400-driven, not name-driven');
   assert.ok(captured.body.output_config.format.schema, 'structured output via output_config');
   assert.deepEqual([res.tokensInput, res.tokensOutput, res.text], [7, 3, 'hi']);
 

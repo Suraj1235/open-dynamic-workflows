@@ -61,7 +61,7 @@ test('anthropic callWithTools: tools + transcript map to native blocks, NEVER ou
   assert.equal(captured.output_config, undefined, 'forced format + tools is rejected by the API — never send it');
   assert.deepEqual(captured.tools, [{ name: 'read_file', description: 'read a file', input_schema: TOOL_DEFS[0].inputSchema }]);
   assert.equal(captured.system, 'sys');
-  assert.equal(captured.temperature, undefined, 'opus-4-8 NO_TEMPERATURE handling preserved');
+  assert.equal(captured.temperature, 0.3, 'temperature is sent on the wire now (dynamic 400-driven strip, not a model-name allowlist)');
   assert.deepEqual(captured.messages[0], { role: 'user', content: 'go' });
   assert.deepEqual(captured.messages[1], {
     role: 'assistant',

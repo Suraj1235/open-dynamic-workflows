@@ -255,7 +255,11 @@ program
     try {
       const check = await (await apiFetch(port, '/config/check', { signal: AbortSignal.timeout(5000) })).json();
       if (check && check.ok === false) {
-        console.error(`${color.err('✗')} model "${check.model}" is not usable: ${check.reason}`);
+        // `reason` already names the offending model (e.g. "default
+        // claude-sonnet-4-6: …"), so don't prefix a redundant — and, since the
+        // readiness payload carries no top-level model id, "undefined" — model
+        // label of our own.
+        console.error(`${color.err('✗')} configured model is not usable: ${check.reason}`);
         console.error(`  ${color.warn('fix:')} edit ~/.odw/config.json — add an API key under "apiKeys", or set "models.default" to a local model like "ollama:llama3" (no key needed).`);
         process.exitCode = 1;
         return;
@@ -401,9 +405,18 @@ program
     }
 
     console.log(`${report.ok ? color.ok('[ok]') : color.err('[x]')} ${agent} integration ${report.ok ? 'ready' : 'needs attention'}`);
-    for (const item of report.checks) {
-      console.log(`  ${item.ok ? color.ok('[ok]') : color.err('[x]')} ${item.label.padEnd(30)} ${item.message}`);
-      console.log(`       ${color.dim(item.path)}`);
+    for (const group of report.groups) {
+      // In `all` mode a never-installed adapter is neutral — collapse it to one
+      // "skipped" line instead of a wall of red "missing" checks. An explicit
+      // single-adapter request still lists every check so the user sees details.
+      if (agent === 'all' && group.status === 'absent') {
+        console.log(`  ${color.dim('[-]')} ${group.agent.padEnd(30)} ${color.dim('not installed — skipped')}`);
+        continue;
+      }
+      for (const item of group.checks) {
+        console.log(`  ${item.ok ? color.ok('[ok]') : color.err('[x]')} ${item.label.padEnd(30)} ${item.message}`);
+        console.log(`       ${color.dim(item.path)}`);
+      }
     }
 
     if (health) {
