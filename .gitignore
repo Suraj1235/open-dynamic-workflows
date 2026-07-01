@@ -16,3 +16,6 @@ Thumbs.db
 *.db-shm
 .tmp/
 .studio/
+
+# Generated test/run output (built demo projects, endurance campaign dumps, monitor status)
+Tests/results/
