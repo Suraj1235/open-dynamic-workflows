@@ -17,6 +17,10 @@ import { createAgentQueue } from './agent-queue.js';
 import { createRuntime } from './runtime.js';
 import { createHostProvider } from './providers/host.js';
 
+// Re-exported so host plugins/servers can assemble the keyless sampling path
+// (createMcpSamplingBackend -> createEmbeddedOrchestrator) from ONE entry point.
+export { createMcpSamplingBackend } from './providers/mcp-sampling.js';
+
 const HOST_MODEL = 'host:default';
 
 /**

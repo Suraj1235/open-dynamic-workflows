@@ -22,10 +22,16 @@ const GEMINI_BEGIN = '<!-- BEGIN open-dynamic-workflows -->';
 const GEMINI_END = '<!-- END open-dynamic-workflows -->';
 
 export function mcpServerCommand({ repoRoot = DEFAULT_REPO_ROOT } = {}) {
-  return {
-    command: 'node',
-    args: [slash(join(repoRoot, 'packages', 'mcp-server', 'src', 'index.js'))],
-  };
+  // ODW_MCP_SAMPLING opts a host into the KEYLESS engine-hosting server: it runs
+  // ODW's real engine in-process on the client's OWN model when the client
+  // advertises MCP sampling, and transparently falls back to the daemon proxy
+  // when it doesn't. Default stays the proxy entry so nothing regresses for
+  // hosts/clients without sampling (Codex, Antigravity today) — flip the flag and
+  // any sampling-capable client goes keyless with no further config.
+  const entry = process.env.ODW_MCP_SAMPLING
+    ? join(repoRoot, 'packages', 'mcp-server', 'src', 'embedded-index.js')
+    : join(repoRoot, 'packages', 'mcp-server', 'src', 'index.js');
+  return { command: 'node', args: [slash(entry)] };
 }
 
 export function installCursorMcp({ home = homedir(), targetDir = process.cwd(), repoRoot = DEFAULT_REPO_ROOT } = {}) {
