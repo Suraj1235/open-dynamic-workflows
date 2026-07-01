@@ -19,3 +19,10 @@ Thumbs.db
 
 # Generated test/run output (built demo projects, endurance campaign dumps, monitor status)
 Tests/results/
+
+# Machine-generated MCP/host configs (regenerate via `odw-daemon doctor`; contain per-checkout absolute paths)
+/.mcp.json
+/.cursor/mcp.json
+/.zed/settings.json
+/.opencode/plugins/odw.mjs
+**/mcp_config.json
